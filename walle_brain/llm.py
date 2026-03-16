@@ -1,62 +1,63 @@
-import re
+import asyncio
 import anthropic
+from anthropic.lib.tools.mcp import async_mcp_tool
+from mcp import ClientSession
+from mcp.client.stdio import stdio_client, StdioServerParameters
+
 from .config import BrainConfig
 from .persona import SYSTEM_PROMPT
 
 
 class WalleBrain:
-    """Cerveau IA de WALL-E — conversation via Claude API avec mémoire de session."""
+    """Cerveau IA de WALL-E — Claude + outils MCP pour contrôler le hardware."""
 
     def __init__(self):
-        self._client  = anthropic.Anthropic(api_key=BrainConfig.ANTHROPIC_API_KEY)
-        self._history = []  # [{"role": "user"|"assistant", "content": str}]
+        self._client  = anthropic.AsyncAnthropic(api_key=BrainConfig.ANTHROPIC_API_KEY)
+        self._history = []
 
-    def think(self, user_input: str) -> tuple[str, list[dict]]:
-        """
-        Envoie un message à WALL-E et retourne (réponse_texte, commandes).
+    def think(self, user_input: str) -> str:
+        """Sync wrapper pour Flask — exécute la boucle async."""
+        return asyncio.run(self._think_async(user_input))
 
-        commandes : liste de dicts {"type": "LED"|"SERVO"|"STEPPER", "args": [...]}
-        """
+    async def _think_async(self, user_input: str) -> str:
         self._history.append({"role": "user", "content": user_input})
         self._trim_history()
 
-        response = self._client.messages.create(
-            model=BrainConfig.MODEL,
-            max_tokens=BrainConfig.MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            messages=self._history,
+        server_params = StdioServerParameters(
+            command=BrainConfig.MCP_COMMAND,
+            args=BrainConfig.MCP_ARGS,
         )
 
-        reply = response.content[0].text
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as mcp_client:
+                await mcp_client.initialize()
+
+                tools_result = await mcp_client.list_tools()
+                mcp_tools = [async_mcp_tool(t, mcp_client) for t in tools_result.tools]
+
+                # Le tool runner gère la boucle outil → réponse automatiquement
+                runner = self._client.beta.messages.tool_runner(
+                    model=BrainConfig.MODEL,
+                    max_tokens=BrainConfig.MAX_TOKENS,
+                    system=SYSTEM_PROMPT,
+                    tools=mcp_tools,
+                    messages=self._history,
+                )
+
+                last_message = None
+                async for message in runner:
+                    last_message = message
+
+        reply = next(
+            (b.text for b in last_message.content if b.type == "text"), "…"
+        )
         self._history.append({"role": "assistant", "content": reply})
-
-        commands = self._parse_commands(reply)
-        clean    = self._strip_commands(reply)
-
-        return clean, commands
+        self._trim_history()
+        return reply
 
     def reset(self):
         self._history.clear()
 
-    # ------------------------------------------------------------------ #
-
     def _trim_history(self):
-        max_pairs = BrainConfig.MAX_HISTORY
-        if len(self._history) > max_pairs * 2:
-            self._history = self._history[-(max_pairs * 2):]
-
-    _CMD_RE = re.compile(
-        r'\[(LED\s+\d+\s+\d+\s+\d+|SERVO\s+\d+|STEPPER\s+-?\d+)\]'
-    )
-
-    def _parse_commands(self, text: str) -> list[dict]:
-        commands = []
-        for match in self._CMD_RE.finditer(text):
-            parts = match.group(1).split()
-            cmd_type = parts[0]
-            args = [int(x) for x in parts[1:]]
-            commands.append({"type": cmd_type, "args": args})
-        return commands
-
-    def _strip_commands(self, text: str) -> str:
-        return self._CMD_RE.sub("", text).strip()
+        if len(self._history) > BrainConfig.MAX_HISTORY * 2:
+            self._history = self._history[-(BrainConfig.MAX_HISTORY * 2):]

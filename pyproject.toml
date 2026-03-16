@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "AI brain for WALL-E robot — Claude API"
 requires-python = ">=3.9"
 dependencies = [
-    "anthropic>=0.40.0",
-    "walle-core",
+    "anthropic[mcp]>=0.40.0",
+    "mcp>=1.0.0",
 ]
 
 [project.scripts]
