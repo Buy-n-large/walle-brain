@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "walle-brain"
+version = "0.1.0"
+description = "AI brain for WALL-E robot — Claude API"
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic>=0.40.0",
+    "walle-core",
+]
+
+[project.scripts]
+walle-brain = "walle_brain.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Buy-n-large/walle-brain"
